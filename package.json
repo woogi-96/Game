@@ -1,0 +1,7 @@
+{
+  "name": "meongmung-game",
+  "private": true,
+  "description": "멍뭉이 털을 찾아라 - 10단계 흰머리 뽑기 브라우저 게임",
+  "scripts": { "test": "node --test" },
+  "devDependencies": { "playwright": "^1.48.0" }
+}
