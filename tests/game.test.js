@@ -1,5 +1,5 @@
 // End-to-end tests for index.html (멍뭉이 털을 찾아라).
-// Run: node --test
+// Run: node --test   (or GAME_URL=https://your-site node --test to test a deployed site)
 // Serves the repo with the Content-Security-Policy from vercel.json so the
 // game is checked under the same headers it gets in production.
 const { test, before, after } = require('node:test');
@@ -16,6 +16,8 @@ const HEADERS = Object.fromEntries(vercel.headers[0].headers.map(h => [h.key, h.
 let server, base, browser;
 
 before(async () => {
+  browser = await chromium.launch();
+  if (process.env.GAME_URL) { base = process.env.GAME_URL.replace(/\/$/, ''); return; } // test a deployed site
   server = http.createServer((req, res) => {
     const urlPath = decodeURIComponent(req.url.split('?')[0]);
     let file = path.join(ROOT, urlPath === '/' ? 'index.html' : urlPath);
@@ -25,7 +27,6 @@ before(async () => {
   });
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   base = `http://127.0.0.1:${server.address().port}`;
-  browser = await chromium.launch();
 });
 after(async () => { await browser?.close(); server?.close(); });
 

@@ -19,3 +19,13 @@ npm test
 ```
 
 테스트는 `vercel.json`의 보안 헤더를 붙여 로컬 서버로 페이지를 띄우고, 시작 흐름, 점수, 통과/실패, 단계별 도구, 다음 날 진행, 엔딩, 모바일 터치를 확인합니다.
+
+배포된 사이트를 테스트하려면 주소를 넣어 실행합니다.
+
+```
+GAME_URL=https://game-steel-five-44.vercel.app npm test
+```
+
+## 플레이 주소
+
+https://game-steel-five-44.vercel.app
