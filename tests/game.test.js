@@ -122,13 +122,18 @@ test('scoring: white hair +5 with happy face, black hair -1 with angry face', as
   await ctx.close();
 });
 
-test('reaching 20 points clears the stage and saves progress', async () => {
+test('reaching 20 points keeps the game going until time is up, then clears and saves', async () => {
   const { page, ctx, errors } = await open();
   await page.evaluate(() => __mm.startGame(1));
   for (let k = 0; k < 4; k++) { await clickHair(page, true); await page.waitForTimeout(50); }
   assert.equal(await page.evaluate(() => __mm.G.score), 20);
-  assert.equal(await page.evaluate(() => __mm.G.running), false);
-  await page.waitForSelector('#resultOv.on');
+  assert.equal(await page.evaluate(() => __mm.G.running), true, 'still playing after the goal');
+  assert.match(await page.locator('#scoreTxt').innerText(), /통과 점수 달성/);
+  await clickHair(page, true);
+  assert.equal(await page.evaluate(() => __mm.G.score), 25, 'can keep plucking past 20');
+  assert.equal(await page.locator('#resultOv.on').count(), 0, 'no result before time is up');
+  await page.evaluate(() => { __mm.G.timeLeft = 0.3; });
+  await page.waitForSelector('#resultOv.on', { timeout: 5000 });
   assert.match(await page.locator('#resultCard').innerText(), /2단계 통과/);
   const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('mmhair_v1')));
   assert.equal(saved.cleared, 1);
@@ -140,7 +145,7 @@ test('time running out fails the stage and retry resets it', async () => {
   const { page, ctx, errors } = await open();
   await page.evaluate(() => { __mm.startGame(0); __mm.G.timeLeft = 0.3; });
   await page.waitForSelector('#resultOv.on', { timeout: 3000 });
-  assert.match(await page.locator('#resultCard').innerText(), /시간 초과/);
+  assert.match(await page.locator('#resultCard').innerText(), /시간 종료/);
   await page.click('[data-a="retry"]');
   assert.equal(await page.evaluate(() => __mm.G.score), 0);
   assert.equal(await page.evaluate(() => __mm.G.timeLeft > 119), true);
@@ -183,17 +188,20 @@ test('after a clear: dance home, next morning, and DAY 2 at 우기네 집', asyn
   // bare hands a random layout can leave no white hair without black neighbours
   await page.evaluate(() => { __mm.startGame(0); __mm.G.tool = 1; __mm.G.score = 15; });
   await clickHair(page, true);
-  await page.waitForSelector('[data-a="out"]', { timeout: 3000 });
+  await page.evaluate(() => { __mm.G.timeLeft = 0.3; });
+  await page.waitForSelector('[data-a="out"]', { timeout: 5000 });
   await page.click('[data-a="out"]');
   await page.waitForSelector('#sOut.on');
   assert.equal(await page.evaluate(() => __mm.chars.mm.pose), 'dance');
   await page.waitForSelector('#sNext.on', { timeout: 60000 });
   assert.equal(await page.locator('#nextTitle').innerText(), 'DAY 2 아침');
-  await page.waitForSelector('#wakeBubble.on', { timeout: 20000 });
-  assert.equal(await page.locator('#wakeBubble').innerText(), '일어나!!!');
-  await page.waitForSelector('#btnNextDay.on', { timeout: 30000 });
+  // 멍뭉이 wakes up alone, talks to himself, and a popup lets you send him to 우기네
+  assert.equal(await page.evaluate(() => __mm.chars.wg.root.visible), false, '우기 is not in his room');
+  await page.waitForFunction(() => /우기 집으로 가볼까/.test(document.getElementById('sleepBubble').textContent), null, { timeout: 30000 });
+  await page.waitForSelector('#goChoice.on', { timeout: 30000 });
+  assert.equal((await page.locator('#btnNextDay').innerText()).trim(), '우기 집으로 가기');
   await page.click('#btnNextDay');
-  await page.waitForSelector('#sRoom.on');
+  await page.waitForSelector('#sRoom.on', { timeout: 40000 });
   assert.match(await page.locator('#dayTag').innerText(), /DAY 2/);
   assert.deepEqual(errors, []);
   await ctx.close();
@@ -201,13 +209,41 @@ test('after a clear: dance home, next morning, and DAY 2 at 우기네 집', asyn
 
 test('clearing stage 10 shows the ending', async () => {
   const { page, ctx, errors } = await open();
-  await page.evaluate(() => { __mm.startGame(9); __mm.G.score = 15; });
+  // this test is about the ending, not aiming: hold stage 10's fidgeting head still
+  await page.evaluate(() => { __mm.startGame(9); __mm.G.score = 15; __mm.G.P.sway = 0; });
   await clickHair(page, true);
-  await page.waitForSelector('[data-a="out"]', { timeout: 3000 });
+  await page.evaluate(() => { __mm.G.timeLeft = 0.3; });
+  await page.waitForSelector('[data-a="out"]', { timeout: 5000 });
   await page.click('[data-a="out"]');
   await page.waitForSelector('#sEnd.on', { timeout: 60000 });
   assert.match(await page.locator('#sEnd h1').innerText(), /흰머리 정복 완료/);
   assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('tools show up in 3D when you use them', async () => {
+  const { page, ctx, errors } = await open();
+  const kinds = {};
+  for (const i of [0, 1, 6, 9]) { await page.evaluate(i => __mm.startGame(i), i); await page.waitForTimeout(300); kinds[i] = await page.evaluate(() => __mm.toolRig.visible && __mm.toolRig.children[0]?.name); }
+  assert.deepEqual(kinds, { 0: 'hand', 1: 'silver', 6: 'electric', 9: 'gold' }, 'hand, tweezers, electric and golden tweezers');
+  assert.deepEqual(await page.evaluate(() => __mm.passive), { hairpin: true, lantern: true }, 'hairpin and head lantern are on');
+  await page.evaluate(() => __mm.startGame(8));
+  for (const [btn, name] of [['#tComb', 'comb'], ['#tTime', 'hourglass'], ['#tRadar', 'radar']]) {
+    await page.click(btn);
+    assert.ok(await page.evaluate(n => __mm.toolFx.includes(n), name), `${name} appears`);
+  }
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('멍뭉이 goes home a different way each stage', async () => {
+  const { page, ctx } = await open();
+  const home = await page.evaluate(() => __mm.HOME.map(h => h.cap + '|' + h.pose + '|' + (h.face || '')));
+  assert.equal(home.length, 10);
+  assert.equal(new Set(home).size, 10, 'ten different ways home');
+  await page.evaluate(() => { __mm.playOut(6); });
+  await page.waitForFunction(() => __mm.chars.mm.pose === 'moonwalk', null, { timeout: 20000 });
+  assert.match(await page.locator('#outCap').innerText(), /문워크/);
   await ctx.close();
 });
 
