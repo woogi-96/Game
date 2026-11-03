@@ -22,7 +22,8 @@ before(async () => {
     const urlPath = decodeURIComponent(req.url.split('?')[0]);
     let file = path.join(ROOT, urlPath === '/' ? 'index.html' : urlPath);
     if (!file.startsWith(ROOT) || !fs.existsSync(file)) { res.writeHead(404); return res.end('not found'); }
-    res.writeHead(200, { ...HEADERS, 'Content-Type': 'text/html; charset=utf-8' });
+    const type = { '.js': 'text/javascript', '.json': 'application/json' }[path.extname(file)] || 'text/html; charset=utf-8';
+    res.writeHead(200, { ...HEADERS, 'Content-Type': type });
     fs.createReadStream(file).pipe(res);
   });
   await new Promise(r => server.listen(0, '127.0.0.1', r));
@@ -40,34 +41,27 @@ async function open(opts = {}) {
     if (m.type() === 'error' && !/fonts\.(googleapis|gstatic)/.test(m.text())) errors.push('console: ' + m.text());
   });
   await page.goto(base + '/', { waitUntil: 'load' });
-  await page.waitForFunction(() => window.__mm);
-  await page.waitForTimeout(400); // sprite variants are generated on load
+  await page.waitForFunction(() => window.__mm, null, { timeout: 30000 }); // 3D engine module loaded
+  await page.waitForTimeout(400);
   return { page, ctx, errors };
 }
 
-// Click a hair through the real pointer path. Picks a point on the hair where no
-// other hair is close enough to be grabbed too (맨손 grabs everything within ~13px,
-// the other tools only take the single nearest hair).
+// Click a hair through the real pointer path. The game's findHair() projects the 3D
+// strands to the screen and returns a point on a strand that faces the camera and has
+// no other strand close enough to be grabbed too (맨손 grabs every strand in reach).
 async function clickHair(page, white, { touch = false } = {}) {
   // wait until the head has settled after the previous pluck's bounce/shake
-  await page.waitForFunction(() => __mm.G.bounce === 0 && __mm.G.shake === 0, null, { timeout: 3000 });
-  const handle = await page.waitForFunction(white => {
-    const { G, toScreen, hairDist } = __mm;
-    const clashR = G.tool === 0 ? 17 : 1.5;
-    for (const h of G.hairs) {
-      if (h.white !== white || h.dying || h.born >= 0 && G.t - h.born < .4) continue;
-      for (const t of [1, .9, .75, .6, .5]) {
-        const u = 1 - t;
-        const x = u * u * h.x + 2 * u * t * h.cx + t * t * h.tx, y = u * u * h.y + 2 * u * t * h.cy + t * t * h.ty;
-        const s = toScreen(x, y), r = document.getElementById('cvWrap').getBoundingClientRect();
-        if (s.x < 6 || s.y < 6 || s.x > r.width - 6 || s.y > r.height - 6) continue; // must be tappable
-        if (!G.hairs.some(o => o !== h && hairDist(o, x, y) < clashR)) return s;
-      }
-    }
-    return null;
-  }, white, { timeout: 8000 });
-  const pt = await handle.jsonValue();
-  const box = await page.locator('#cvWrap').boundingBox();
+  await page.waitForFunction(() => __mm.G.bounce === 0 && __mm.G.shake === 0, null, { timeout: 5000 });
+  // a matching strand may be on the back of the head: turn the view like a player would
+  let handle = await page.waitForFunction(white => __mm.findHair(white), white, { timeout: 2500 }).catch(() => null);
+  for (let k = 0; !handle && k < 6; k++) {
+    await page.evaluate(white => __mm.aimAt(white), white);
+    handle = await page.waitForFunction(white => __mm.findHair(white), white, { timeout: 2500 }).catch(() => null);
+  }
+  assert.ok(handle, `found a ${white ? 'white' : 'black'} strand to pluck`);
+  await page.waitForTimeout(150); // let the camera settle before the click
+  const pt = await page.evaluate(white => __mm.findHair(white), white) || await handle.jsonValue();
+  const box = await page.locator('#app').boundingBox();
   if (touch) await page.touchscreen.tap(box.x + pt.x, box.y + pt.y);
   else await page.mouse.click(box.x + pt.x, box.y + pt.y);
 }
@@ -78,6 +72,17 @@ test('page is served with the production CSP and loads without errors', async ()
   assert.match(await page.locator('#sTitle h1').innerText(), /멍뭉이 털을 찾아라/);
   assert.equal(await page.locator('#stageGrid button').count(), 10);
   assert.equal(await page.locator('#stageGrid button:not([disabled])').count(), 1, 'only stage 1 unlocked at first');
+  // the 3D scene actually draws: sample the WebGL canvas for more than one colour
+  const colours = await page.evaluate(() => new Promise(r => requestAnimationFrame(() => {
+    const c = document.createElement('canvas'), gl = document.getElementById('gl');
+    c.width = 40; c.height = 40; const x = c.getContext('2d'); x.drawImage(gl, 0, 0, 40, 40);
+    const d = x.getImageData(0, 0, 40, 40).data, s = new Set();
+    for (let i = 0; i < d.length; i += 4) s.add(d[i] >> 4 << 8 | d[i + 1] >> 4 << 4 | d[i + 2] >> 4);
+    r(s.size);
+  })));
+  assert.ok(colours > 20, `3D scene rendered (${colours} colours)`);
+  const chars = await page.evaluate(() => Object.keys(__mm.chars).map(k => __mm.chars[k].root.visible));
+  assert.deepEqual(chars, [true, true], '멍뭉이 and 우기 are in the room');
   assert.deepEqual(errors, []);
   await ctx.close();
 });
@@ -85,7 +90,7 @@ test('page is served with the production CSP and loads without errors', async ()
 test('stage 1 intro: arrival, single 좋아 answer, tool card, 2:00 timer', async () => {
   const { page, ctx, errors } = await open();
   await page.click('#btnStart');
-  await page.waitForSelector('#mmBubble.on', { timeout: 10000 });
+  await page.waitForSelector('#mmBubble.on', { timeout: 40000 });
   assert.equal(await page.locator('#mmBubble').innerText(), '오늘도 흰머리를 뽑아보자!');
   await page.waitForSelector('#choice.on');
   const answers = page.locator('#choice button');
@@ -181,9 +186,12 @@ test('after a clear: dance home, next morning, and DAY 2 at 우기네 집', asyn
   await page.waitForSelector('[data-a="out"]', { timeout: 3000 });
   await page.click('[data-a="out"]');
   await page.waitForSelector('#sOut.on');
-  assert.match(await page.locator('#oMM').getAttribute('class'), /dance/);
-  await page.waitForSelector('#sNext.on', { timeout: 20000 });
+  assert.equal(await page.evaluate(() => __mm.chars.mm.pose), 'dance');
+  await page.waitForSelector('#sNext.on', { timeout: 60000 });
   assert.equal(await page.locator('#nextTitle').innerText(), 'DAY 2 아침');
+  await page.waitForSelector('#wakeBubble.on', { timeout: 20000 });
+  assert.equal(await page.locator('#wakeBubble').innerText(), '일어나!!!');
+  await page.waitForSelector('#btnNextDay.on', { timeout: 30000 });
   await page.click('#btnNextDay');
   await page.waitForSelector('#sRoom.on');
   assert.match(await page.locator('#dayTag').innerText(), /DAY 2/);
@@ -197,8 +205,21 @@ test('clearing stage 10 shows the ending', async () => {
   await clickHair(page, true);
   await page.waitForSelector('[data-a="out"]', { timeout: 3000 });
   await page.click('[data-a="out"]');
-  await page.waitForSelector('#sEnd.on', { timeout: 20000 });
+  await page.waitForSelector('#sEnd.on', { timeout: 60000 });
   assert.match(await page.locator('#sEnd h1').innerText(), /흰머리 정복 완료/);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('dragging rotates the head instead of plucking', async () => {
+  const { page, ctx, errors } = await open();
+  await page.evaluate(() => __mm.startGame(1));
+  const before = await page.evaluate(() => ({ yaw: __mm.G.yawT, n: __mm.G.hairs.length }));
+  await page.mouse.move(200, 420); await page.mouse.down(); await page.mouse.move(320, 400, { steps: 8 }); await page.mouse.up();
+  const after = await page.evaluate(() => ({ yaw: __mm.G.yawT, n: __mm.G.hairs.length, score: __mm.G.score }));
+  assert.ok(Math.abs(after.yaw - before.yaw) > .5, 'camera turned around the head');
+  assert.equal(after.n, before.n, 'no strand was plucked by the drag');
+  assert.equal(after.score, 0);
   assert.deepEqual(errors, []);
   await ctx.close();
 });
