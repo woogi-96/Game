@@ -87,7 +87,7 @@ test('page is served with the production CSP and loads without errors', async ()
   await ctx.close();
 });
 
-test('stage 1 intro: arrival, single 좋아 answer, tool card, 2:00 timer', async () => {
+test('stage 1 intro: arrival, single 좋아 answer, tool card, 1:00 timer', async () => {
   const { page, ctx, errors } = await open();
   await page.click('#btnStart');
   await page.waitForSelector('#mmBubble.on', { timeout: 40000 });
@@ -101,7 +101,8 @@ test('stage 1 intro: arrival, single 좋아 answer, tool card, 2:00 timer', asyn
   assert.equal(await page.locator('#toolName').innerText(), '맨손');
   await page.click('#btnGo');
   await page.waitForSelector('#sGame.on');
-  assert.match(await page.locator('#timeTxt').innerText(), /2:00|1:59/);
+  assert.match(await page.locator('#timeTxt').innerText(), /1:00|0:59/);
+  assert.equal(await page.evaluate(() => __mm.music.playing), true, 'background music started after the first tap');
   assert.equal(await page.locator('#scoreTxt').innerText(), '0 / 20점');
   assert.deepEqual(errors, []);
   await ctx.close();
@@ -148,7 +149,7 @@ test('time running out fails the stage and retry resets it', async () => {
   assert.match(await page.locator('#resultCard').innerText(), /시간 종료/);
   await page.click('[data-a="retry"]');
   assert.equal(await page.evaluate(() => __mm.G.score), 0);
-  assert.equal(await page.evaluate(() => __mm.G.timeLeft > 119), true);
+  assert.equal(await page.evaluate(() => __mm.G.timeLeft > 59), true);
   assert.deepEqual(errors, []);
   await ctx.close();
 });
@@ -156,9 +157,8 @@ test('time running out fails the stage and retry resets it', async () => {
 test('10 stages get harder and unlock tools', async () => {
   const { page, ctx } = await open();
   const ps = await page.evaluate(() => Array.from({ length: 10 }, (_, i) => __mm.stageParams(i)));
-  assert.equal(ps[0].time, 120);
+  assert.ok(ps.every(p => p.time === 60), 'every stage lasts one minute');
   for (let i = 1; i < 10; i++) {
-    assert.ok(ps[i].time <= ps[i - 1].time, 'time limit never grows');
     assert.ok(ps[i].black > ps[i - 1].black, 'more black hairs each stage');
     assert.ok(ps[i].white <= ps[i - 1].white, 'fewer white hairs at once');
   }

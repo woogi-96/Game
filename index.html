@@ -282,15 +282,71 @@ const SFX = {
   blip: () => beep(rand(600, 760), .04, 'square', .02),
   door: () => { beep(300, .15, 'triangle', .05, -80); },
 };
-let melodyTimer = null;
-function playMelody() {
-  stopMelody();
-  const notes = [523, 659, 784, 659, 698, 880, 784, 0, 659, 784, 1047, 784, 698, 659, 587, 523];
-  let i = 0;
-  melodyTimer = setInterval(() => { const n = notes[i++ % notes.length]; if (n) beep(n, .16, 'triangle', .05); }, 190);
-}
-function stopMelody() { if (melodyTimer) clearInterval(melodyTimer); melodyTimer = null; }
-$('#muteBtn').onclick = () => { muted = !muted; $('#muteBtn').textContent = muted ? '🔇' : '🔊'; if (muted) stopMelody(); };
+/* ---- background music: an original, bouncy "going for a walk" tune ---- */
+const music = (() => {
+  const BPM = 118, STEP = 60 / BPM / 2;              // eighth notes
+  const NOTE = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+  const hz = s => { if (!s || s === '.') return 0; const m = s.match(/^([A-G])(#?)(\d)$/); return 440 * Math.pow(2, (12 * (+m[3] + 1) + NOTE[m[1]] + (m[2] ? 1 : 0) - 69) / 12); };
+  const seq = str => str.trim().split(/\s+/).map(hz);
+  // 16 bars, 8 steps each: A A' B A''
+  const MEL = seq(`
+    E5 . G5 E5 C5 . D5 E5   F5 . E5 D5 C5 . . .   D5 . F5 D5 B4 . C5 D5   E5 . D5 C5 G4 . . .
+    E5 . G5 E5 C6 . B5 A5   G5 . E5 C5 A4 . C5 .  D5 . E5 F5 E5 D5 C5 B4  C5 . G4 . C5 . . .
+    A4 . C5 A4 F5 . E5 D5   G5 . F5 E5 D5 . . .   C5 . E5 G5 C6 . A5 G5   F5 E5 D5 E5 G5 . . .
+    E5 . G5 E5 C6 . B5 A5   G5 . E5 G5 A5 . G5 E5 F5 . D5 . G5 . B4 .   C5 . E5 G5 C6 . . .`);
+  const BASS = seq(`
+    C3 . G3 . C3 . G3 .   F2 . C3 . F2 . C3 .   G2 . D3 . G2 . D3 .   C3 . G3 . C3 . E3 .
+    C3 . G3 . E3 . G3 .   A2 . E3 . F2 . C3 .   G2 . D3 . G2 . B2 .   C3 . G2 . C3 . . .
+    F2 . C3 . F2 . A2 .   C3 . G2 . C3 . E3 .   A2 . E3 . F2 . C3 .   D3 . A2 . G2 . B2 .
+    C3 . G3 . E3 . G3 .   F2 . C3 . A2 . C3 .   G2 . D3 . G2 . B2 .   C3 . G2 . C3 . . .`);
+  let gain = null, timer = null, step = 0, next = 0, level = .7, started = false, noiseBuf = null;
+  function tone(t, f, dur, type, v) {
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = type; o.frequency.setValueAtTime(f, t);
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(v, t + .012); g.gain.exponentialRampToValueAtTime(.0001, t + dur);
+    o.connect(g).connect(gain); o.start(t); o.stop(t + dur + .02);
+  }
+  function hat(t, v) {
+    if (!noiseBuf) { noiseBuf = actx.createBuffer(1, actx.sampleRate * .05, actx.sampleRate); const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; }
+    const s = actx.createBufferSource(), f = actx.createBiquadFilter(), g = actx.createGain();
+    s.buffer = noiseBuf; f.type = 'highpass'; f.frequency.value = 6000;
+    g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(.0001, t + .04);
+    s.connect(f).connect(g).connect(gain); s.start(t);
+  }
+  function kick(t) { const o = actx.createOscillator(), g = actx.createGain(); o.frequency.setValueAtTime(140, t); o.frequency.exponentialRampToValueAtTime(45, t + .12); g.gain.setValueAtTime(.35, t); g.gain.exponentialRampToValueAtTime(.0001, t + .14); o.connect(g).connect(gain); o.start(t); o.stop(t + .16); }
+  function tick() {
+    while (next < actx.currentTime + .25) {
+      const m = MEL[step % MEL.length], bs = BASS[step % BASS.length], beat = step % 8;
+      if (m) { tone(next, m, STEP * 1.6, 'triangle', .16); tone(next, m * 2, STEP * .7, 'sine', .035); }   // glockenspiel-ish lead
+      if (bs) tone(next, bs, STEP * 1.8, 'triangle', .2);
+      if (beat === 0 || beat === 4) kick(next);
+      if (beat % 2 === 1) hat(next, .05);
+      if (beat === 2 || beat === 6) { const c = BASS[(step - step % 8) % BASS.length] * 4; tone(next, c, STEP * .8, 'square', .022); tone(next, c * 1.26, STEP * .8, 'square', .018); }   // offbeat chord stab
+      next += STEP; step++;
+    }
+  }
+  function apply() { if (gain) gain.gain.setTargetAtTime(muted ? 0 : level * .55, actx.currentTime, .3); }
+  return {
+    start() {
+      if (started) return; started = true;
+      try {
+        actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+        if (actx.state === 'suspended') actx.resume();
+        gain = actx.createGain(); gain.gain.value = 0; gain.connect(actx.destination);
+        next = actx.currentTime + .1; timer = setInterval(tick, 40); apply();
+      } catch (e) {}
+    },
+    level(v) { level = v; apply(); },
+    apply,
+    get playing() { return started; },
+  };
+})();
+// browsers only allow sound after a tap or click
+['pointerdown', 'keydown'].forEach(ev => window.addEventListener(ev, () => music.start(), { once: true, capture: true }));
+const SCENE_MUSIC = { sTitle: .7, sRoom: .7, sGame: .45, sOut: 1, sNext: .65, sEnd: 1 };
+function playMelody() { music.level(1); }
+function stopMelody() {}
+$('#muteBtn').onclick = () => { muted = !muted; $('#muteBtn').textContent = muted ? '🔇' : '🔊'; music.apply(); };
 
 /* ================= Renderer ================= */
 const canvas = $('#gl');
@@ -1165,7 +1221,7 @@ const TOOLS = [
 ];
 function stageParams(i) {
   return {
-    time: 120 - i * 5,
+    time: 60,
     black: 70 + i * 16,
     white: [7, 6, 6, 5, 5, 5, 4, 4, 4, 3][i],
     life: [0, 0, 14, 12, 10, 9, 8, 7, 6, 5][i],
@@ -1181,7 +1237,7 @@ const GOAL = 20, LAST = 9;
 
 /* ================= Scenes ================= */
 let current = 'title';
-function show(id) { cam.follow = null; document.querySelectorAll('.scene').forEach(s => s.classList.toggle('on', s.id === id)); }
+function show(id) { cam.follow = null; document.querySelectorAll('.scene').forEach(s => s.classList.toggle('on', s.id === id)); music.level(SCENE_MUSIC[id] ?? .7); }
 let save = store.get(); save.cleared = save.cleared ?? -1; save.total = save.total || 0;
 let runTotal = 0, seq = 0;
 function renderTitle() {
@@ -1760,7 +1816,7 @@ async function playOut(i) {
   clearInterval(noteI); stopMelody(); SFX.pop(); cam.follow = null;
   await wait(900); if (!alive()) return;
   if (i >= LAST) { playEnd(); return; }
-  $('#night').classList.add('on');
+  $('#night').classList.add('on'); music.level(.35);
   await wait(1300); $('#nightTxt').classList.add('on');
   await wait(1700); if (!alive()) return;
   playMorning(i + 1);
@@ -1889,7 +1945,7 @@ renderTitle(); titleScene();
 requestAnimationFrame(frame);
 setTimeout(() => $('#loading').classList.add('done'), 150);
 
-window.__mm = { startGame, playRoom, playOut, playEnd, playMorning, get G() { return G; }, pluckAt, findHair, aimAt, stageParams, HOME, toolRig, get toolFx() { return toolFx.map(f => f.name); }, get passive() { return { hairpin: !!hairpin, lantern: !!lantern }; }, TOOLS, chars: { mm, wg }, get scene() { return current; } };
+window.__mm = { startGame, playRoom, playOut, playEnd, playMorning, get G() { return G; }, pluckAt, findHair, aimAt, stageParams, music, HOME, toolRig, get toolFx() { return toolFx.map(f => f.name); }, get passive() { return { hairpin: !!hairpin, lantern: !!lantern }; }, TOOLS, chars: { mm, wg }, get scene() { return current; } };
 </script>
 </body>
 </html>
